@@ -4,7 +4,7 @@
 NAVI.ai Quick Start
 =====================
 
-STILL UNDER DEVELOPMENT
+STILL UNDER DEVELOPMENT---
 REQUIREMENTS (first time setup):
 1. Install Python: https://www.python.org/ (Check "Add python.exe to PATH" during setup)
 2. Install Ollama: https://ollama.com/
