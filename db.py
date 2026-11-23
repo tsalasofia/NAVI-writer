@@ -1,6 +1,7 @@
 import sqlite3
 import datetime
 from contextlib import contextmanager
+import hashlib, hmac, os
 
 DB_FILE = "history.db"
 
@@ -68,11 +69,28 @@ def init_db():
             )
             """
         )
+        conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS diary_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL,
+        content TEXT NOT NULL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
 
         # Migration for older databases that lack content_hash
         cols = [r[1] for r in conn.execute("PRAGMA table_info(files)").fetchall()]
         if "content_hash" not in cols:
             conn.execute("ALTER TABLE files ADD COLUMN content_hash TEXT")
+
+        # Diary chats: each diary entry belongs to a diary session
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS diary_sessions ("
+            "id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        dcols = [r[1] for r in conn.execute("PRAGMA table_info(diary_entries)").fetchall()]
+        if "session_id" not in dcols:
+            conn.execute("ALTER TABLE diary_entries ADD COLUMN session_id TEXT")
+        if conn.execute("SELECT COUNT(*) FROM diary_entries WHERE session_id IS NULL").fetchone()[0]:
+            legacy = "legacy_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            conn.execute("INSERT INTO diary_sessions (id, title) VALUES (?, ?)", (legacy, "Earlier entries"))
+            conn.execute("UPDATE diary_entries SET session_id = ? WHERE session_id IS NULL", (legacy,))
 
 
 # ---------- sessions ----------
@@ -181,3 +199,31 @@ def get_reports():
 def delete_report_record(report_id):
     with get_conn() as conn:
         conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+
+
+
+def rename_session(session_id, title):
+    with get_conn() as conn:
+        conn.execute("UPDATE chat_sessions SET title = ? WHERE id = ?", (title, session_id))
+
+def _hash_pin(pin, salt):
+    return hashlib.pbkdf2_hmac("sha256", pin.encode(), salt, 200_000).hex()
+
+def has_pin():
+    with get_conn() as conn:
+        return conn.execute("SELECT 1 FROM settings WHERE key='diary_pin'").fetchone() is not None
+
+def set_pin(pin):
+    salt = os.urandom(16)
+    value = salt.hex() + "$" + _hash_pin(pin, salt)
+    with get_conn() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('diary_pin', ?)", (value,))
+
+def verify_pin(pin):
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key='diary_pin'").fetchone()
+    if not row or not pin:
+        return False
+    salt_hex, digest = row[0].split("$")
+    return hmac.compare_digest(_hash_pin(pin, bytes.fromhex(salt_hex)), digest)
+
